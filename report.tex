@@ -1,0 +1,167 @@
+\documentclass[journal]{IEEEtran}
+\usepackage{graphicx}
+%\usepackage{authblk} % to allow affiliation [N] in the author list
+\usepackage{textcomp} % proper tilde
+
+\begin{document}
+
+\title{High Performance Detector Software\\
+for PERCIVAL Detector}
+
+\author{~Q. Gu}
+
+% Page Header
+\markboth{Diamond Light Source Summer Internship Programme Report}%
+{Shell \MakeLowercase{\textit{et al.}}: Feasibility Study of PERCIVAL Data
+Acquisition Backend Architecture}
+
+\maketitle
+
+\begin{abstract}
+
+\end{abstract}
+
+\section{Introduction}
+
+\IEEEPARstart{T}{he} PERCIVAL\cite{wunderer2014percival} (Pixelated, Energy Resolving CMOS Imager, Versatile And Large) detector is a new generation X-ray detector aiming to achieve real-time data capturing, pre-processing and storing. This report describes how a highly optimised library had been designed to pre-process Percival output. \\ 
+Percival is capable of outputing 120fps (frames per second) with each frame containing \texttildelow 13M pixels (3717 $\times$ 3528 pixels). Each pixel is represented by a 16-bit integer packed from 3 separate integers, knowns as the Fine, Coarse ang Gain bits. 
+
+\begin{table}[h]
+\centering
+\label{bit_arrangement}
+\begin{tabular}{r l c c c r l c c c c c c  r l r}
+\hline
+\multicolumn{1}{|c|}{} & 
+\multicolumn{5}{|c|}{Coarse (C)} & 
+\multicolumn{8}{|c|}{Fine (F)} &
+\multicolumn{2}{|c|}{Gain} \\
+\hline
+ 15 & 14 & & & & 11 & 10 & & & & & & & 2 & 1 & 0
+
+\end{tabular}
+\caption{Bit arrangement.}
+\end{table}
+
+The processing backend consists of a cluster of eight nodes each receiving a full frame of data. From the pre-processing library's perpective, the upstream functions delivers a stream of detector output into the local memory buffer and the library should write back to local buffer when processing completes, which will then be written to disc by downstream applications. \\ \\
+Processing steps required of this library are as follows,
+\begin{itemize}
+ \item \textbf{Step 1: ADC coarse, ADC Fine, and Gain decoding} Extract bits from packed 16-bit integer and convert digitized figures to floating point numbers (Calibration).
+	\begin{equation}
+		ADU(i,j) = \frac{C - O_F}{G_F} - \frac{F - O_F}{G_F}
+	\end{equation}
+ \item \textbf{Step 2: Gain Multiplication} Multiply previous results by a factor depending on location.
+	\begin{equation}
+		I_{sample}(i,j) = ADU(i,j) \times K(G_{sample}(i,j))
+	\end{equation}
+where K is a constant depending on pixel location and value of GainBits.	
+ \item \textbf{Step 3: CDS subtraction} Subtract reset frame that has gone through previous two steps if the corresponding pixels in sample frame has gain bit 0b00.
+	\begin{equation}	
+		I_0(i,j) = I_{sample}(i,j) - I_{reset}(i,j) \times \delta(G_{sample}=0b00)
+	\end{equation}
+ \item \textbf{Step 4: Dark Image Subtraction} Subtract a constant frame from the result of previous step.
+	\begin{equation}
+		I(i,j) = I_0(i,j) - Dark(i,j)
+	\end{equation}
+\end{itemize}
+
+Step 1 and Step 2 are collectively termed ADC decode in this report. $Gc, Gf, Oc, Of, K, Dark$ are all constant arrays intrinsic to the detector and Analogue to Digital Converters (ADCs), supplied before data is gathered.
+
+%table of sizes of arrays.
+\begin{table}[h]
+
+\label{array_dims}
+\centering
+\begin{tabular}{l c c c}
+\hline
+Array 					& Width(pixels) & Datatype\\
+\hline\hline
+Sample/Reset Frame       				& 3528 & uint16     \\
+\hline
+Dark(unaligned)					 	& 3528 & float32     \\
+\hline
+Dark(aligned)				 		& 4032 & float32     \\
+\hline
+$G_C/G_F/O_C/O_F$ unaligned 				& 7    & float32    \\
+\hline
+$G_C/G_F/O_C/O_F$ aligned 				& 8    & float32     \\
+\hline
+$K_{00}/K_{01}/K_{10}/K_{11}$ unaligned 	& 3528 & float32     \\
+\hline
+$K_{00}/K_{01}/K_{10}/K_{11}$ aligned 		& 4032 & float32     \\
+\hline
+
+\end{tabular}
+\caption{Array dimensions}
+\end{table}
+
+
+
+\section{Test Driven Development (TDD)} %page2
+
+The development process was guided by a set of tests which act as a specifications to check the code against. Each function is written in order to pass the tests. The tests are run each time some part of the code has been modified. The tests utilized Boost Unit Test Framework. These tests follows the following guidelines.
+\begin{itemize}
+ \item \textbf{Range Tests:} Test if array dimensions are consistent with table.
+ \item \textbf{Computation Tests:} Test if the result returned from the function agrees with manually calculated results within $0.01\%$.	
+\end{itemize}
+
+\section{Organisation}	%page2
+The library builds upon basic constructs including the memory buffer, the calibration data container, the data file location container, exception classes and functions that check data validity. Based upon these constructs, more advanced features important to optimisation such as the parallelised algorithms and algorithms assisted by Intel Advanced Vector Extensions are supplied in separate header files. In order to accommadate these extended features, the basic constructs have been adapted slightly. Particularly, all functions are implemented using function objects with a thin function wrapper. A few Python scripts have also been included to facilitate processing profiling and timing results.
+\subsection{Basic Constructs}
+
+\subsection{Parallelised Algorithm}
+\subsection{Data Validity Checking}
+\subsection{Tools}
+
+\section{Performance Analysis and Tuning} %page3&4
+The critical requirement on this library is processing time, as opposed to other aspects such as power consumption and memory usage. Therefore, the key indicator of performance is the bandwidth, defined as amount of data processed per second, counting both the sample and reset frames. Processing one sample and one reset frame in one second corresponds to a processing rate of 52MB/s. The general approach to performance tuning starts with profiling, which gives detailed report on how much time/memory were spent in each function/line of code/file. These key indicators reflect the bottleneck of the target program and are very important, though not necessarily accurate, guide on how best to optimise the library. Typically, target codes are either memory-bound or core-bound (bounded by computation). There are standard approaches correspond to either category. These tuning is often specific to hardware, particularly on the micro-architecture of the system.
+\subsection{Identify the Hotspots}
+\subsubsection{Profiling Tools}
+In our study, we have considered both instrumentation and statistical profiling tools. Instrumentation, with gprof as an example, requires compilers to add extra code to user code, thus incurrs more errors in measurement. On the other hand, statistical profiling uses hardware counters to count system interrupts when certain events happen on the hardware level. This, though inevitably slows down the processor, is known to generate more accurate results. We thus used OProfile, a statistical profiling tool, to study our system. Important events are listed in table.
+\subsubsection{Interpreting OProfile Results}
+OProfile is also able to give line-by-line profiling results along side the source code. This feature helps to get a more fine-grain idea of where the hotspot is. However, the indicated location often lags the real location by a few instructions, also known as skids. These cannot be avoided using current hardware.
+
+\subsection{Optimising the Algorithm}
+We performed baseline measurements on both single-threaded and multi-threaded codes, which indicated the floating-point computation corresponding to equation 1 limits the bandwidth. We thus started on reducing clock cycles spent on computation.
+\subsubsection{Reducing Computation Time}
+Floating point divisions are inherently much more costly than multiplication and addition. The first step to optimisation lies in converting $G_C$ and $G_F$ to their inverses before actual computation starts. During the processing, division by $G_C$ and $G_F$ is replaced by multiplication of their inverses. These operations are done internally and do not require supplier of calibration data to perform extra computation.\\
+Similarly, bitwise operations were also used to replace integer modulus and division.\\
+\subsubsection{Parallelisation}
+Intel Threading Building Blocks (Intel TBB) was employed to parallelize the library. Advantages of Intel TBB include an automatic management of tasks, scheduling and load-balancing. It builds upon C++ object oriented models and are more user-friendly than conventional pthread. The parallel-for and pipeline models have both been applied to our library and the result shows that Pipeline is better overall, though the cost on TBB internal functions is higher.
+
+\subsubsection{Vectorisation}
+Intel IvyBirdge and SandyBridge architecture both allows Intel Advanced Vector Extensions instruction sets. Intel AVX utilizes 256-bit wide YMM registers to perform Single Instruction Multiple Data (SIMD) on packed floating point numbers. AVX theoretically has twice the computation power, compared to previous Streaming SIMD Extensions (SSE, using 128-bit XMM registers) automatically utilized by many compiler optimisers. 
+
+\subsubsection{Optimising Cache Usage}
+Memory alignment helps to improve efficiency of AVX load operations and had been applied to the calibration data. Each 7 calibration data are grouped and aligned to 256 bit boundary.
+
+\subsection{Measuring Performance}
+Performance varies due to many factors, including other tasks running on the same machine, the timing function used and cache access pattern determined by input data types. It is therefore more reasonable to measure statistical performance by average over a large number of repeats, each having realistic workload. In our tests, we processed 100 to 300 image frames occupying separate memory locations and repeated this processing 10 times. This test is then repeated another 10 times using the Python script which also computes the mean and standard deviation from these bandwidth measurrments.
+
+\subsection{Results}
+% a graph showing how each step gives rise to optimisation
+\subsubsection{Number of Threads}
+\subsubsection{Size of Sub-problems}
+\subsubsection{Maximum Instantaneous Number of Sub-problems}
+% a graph showing how much time is spent in tbb::internals
+
+\section{Conclusion}	%page5
+
+
+%\bibliographystyle{plain}
+%\bibliographystyle{IEEEtran}
+% argument is your BibTeX string definitions and bibliography database(s)
+%\bibliography{citations}
+
+\begin{thebibliography}{1}
+
+\bibitem{wunderer2014percival}
+CB~Wunderer, A~Marras, M~Bayer, L~Glaser, P~G{\"o}ttlicher, S~Lange, F~Pithan,
+  F~Scholz, J~Seltmann, I~Shevyakov, et~al.
+\emph{The percival soft x-ray imager}, Journal of Instrumentation, 9(03):C03056, 2014.
+
+\end{thebibliography}
+
+
+\end{document}
+
+
