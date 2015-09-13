@@ -55,9 +55,9 @@ Micro-architecture & Intel SandyBridge & Intel IvyBridge \\
 \hline
 Processor Number& 	E5-2670 0	& E5-2670 v2 \\
 Number of machines&	2		& 6	\\
-L1D cache	&	32K		& 32K \\
-L2 cache (shared)&	256K		& 256K \\
-L3 cache (LLC)	&	20MB (shared)	& 25MB (shared) \\
+L1D cache	&	32K(8-way)		& 32K(8-way) \\
+L2 cache (shared)  &	256K	(8-way)	& 256K(8-way) \\
+L3 cache (LLC, shared)	&	20MB (20-way)	& 25MB (20-way) \\
 Core per processor  &	8		& 10	\\
 Number of processors  &	2		& 2	\\
 Memory bandwidth    &51.2GB/s       & \\
@@ -241,11 +241,10 @@ Instruction & Operation & Datatype & Latency & Throughput \\
 \caption{Operation latency and throughput.}\label{ops}
 \end{table}
 
-\subsubsection{Optimising Cache Usage}
+\subsubsection{Optimising Memory Usage}
 Contiguous memory addresses are automatically prefetched the hardware (HW) prefetcher which is triggered on the second cache miss and will monitor accesses within a 4KB-range. HW prefetcher attempts to stay 256 bytes ahead and moniters 8 streams independently at the same time. Excessive HW prefetch saturates memory bus and limits scalability of high throughput parallel programs. OProfile can give averaged memory access bandwidth. The theoretical maximum bandwidth for four memory channels is 51.2GB/s per socket. When memory is saturated, further increase in thread number does not improve performance. \\
 Cacheability tools such as stream store and stream read could be applied if the memory addresses in concern are 128-bit aligned, which is not applicable currently. Future optimisation work might involve aligning the arrays in memory. \\
-
-
+The L1D cache is 8-way associative of 64 sets. In an usual memory address, the last 6 bits denotes offset in a cacheline (64 bytes) and the next 6 bits denote the set number. Fetching more than 8 cachelines with the same middle 6 bits causes conflict misses (premature eviction) and possibly increase miss rate. This is known as 4K aliasing ($2^12$) and should be avoided. 4K aliasing would be more manifested in Percival library in which 12 data members worst-case need to be prefetched in one cycle and they have all been aligned to the same boundary.  \\
 
 \subsection{Measuring Performance}
 At early stage of profiling, OProfile output is used to measure the time spent in each function. However, GCC compiler tends to inline small functions when optimisation is switch on and consequently OProfile wrong detect the function being called. We resolved to using a time difference measurement before and after the function is turned on. Though performance varies between runs, we can still obtain reasonably good estimate with this method. The GNU timer was for this purpose, giving Elapsed Wall time in centi-second precision. \\
@@ -265,8 +264,19 @@ Optimisations performed lower down the chart are modifications of code higher up
 
 \end{figure}
 
+\subsubsection{Grain size}
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.48\textwidth]{fig/lineplot_grain_size.eps}
+\caption{Grain size-Bandwidth dependence. The lower two panels show a zoomed plots corresponding to large and small grain sizes. Note that parallelism was limited when grain size is larger than \texttildelow 1M pixels.}\label{grain_size}
+
+\end{figure}
+Fig. \ref{grain_size} shows dependence of bandwidth on the subrange delegated to each (grain size). Bandwidth decreases in general with subrange size and can be explained as the subproblems no longer fit into caches. In the region with grain size $700,000 ~ 110,000$, complex peaks and troughs were observed. This behaviour could not be fully explained at the time of completion. However, the bandwidth dependence on the number of threads (Fig. \ref{threads}) might shed light on this complex pattern. \\
+
 \subsubsection{Number of Threads}
-The number of logical threads are theoretically optimal when it equals the number of physical threads. With HyperThreading switched off, fig .. shows agreement between the number of logical threads used and number of physical threads present. 
+The number of logical threads are theoretically optimal when it equals the number of physical threads. With HyperThreading switched off, Fig.\ref{thread} shows more subtleties in this dependence. The bandwidth depends on number of threads and grain size simultaneously. When the number of subproblems is far greater than the number of physical threads available, linear scaling with number of threads is followed by saturation at 10 threads. When the number of subproblems less than number of physical threads, saturation is observed when the number of threads equals number of subproblems. The onset of saturation is independent of number of physical cores. This hints on the library being memory bound. \\
+
+Most complex of all is when the number of subproblems is greater than but comparable to the number of physical threads. Onset of saturation is shifted to smaller number of logical threads and two stages of saturations were oberved with the second stage always performing better than the first. In addition, the onset of saturation is dependent the number of physical cores available. \\
 
 \begin{figure}[h]
 \centering
@@ -276,23 +286,18 @@ The number of logical threads are theoretically optimal when it equals the numbe
 \end{figure}
 
 
-\subsubsection{Size of Sub-problems}
-\begin{figure}[h]
-\centering
-\includegraphics[width=0.48\textwidth]{fig/lineplot_grain_size.eps}
-\caption{Grain size-Bandwidth dependence. The lower two panels show a zoomed plots corresponding to large and small grain sizes.}\label{grain_size}
+The following hypothesis attempts to give a reason to the two figures. Suppose peaks in Fig.\ref{grain_size} are due to the L3 cache being filled up. Since not necessarily all threads are working simultaneously, it is possible that the L3 cache is filled by worksets of 1~8 threads (in server 77). This leads to the major and minor spikes in Fig.\ref{grain_size}, with the major ones at 811440 (1 thread), 44423360 (2 threads), 2000000 (4 threads) and 1000000 (8 threads). Small peaks are due to other multiples of number of threads which, due to TBB's way of dividing tasks, are not as capable of fitting into the cache. \\
 
-\end{figure}
+The effective pixel size from this argument is approximately 32.3 Bytes in close agreement with the expected pixel size, 30.9 Bytes, including associated calibration data. In Fig.\ref{threads} onsets of the bandwidth saturation (at 4 and 9 threads respectively) correspond to half-filled and filled L3 cache. This trend is generally observed even for grain size other than 8114400. Also, since servers 83 and 85 have larger L3 caches, the number of threads needed to reach saturation is larger than server 77. With this rule of thumb in mind, The grain size could be chosen in relation to the number of threads available such that saturation appears at smaller number of threads. This saves computation resources. \\
 
-
-
+Furthermore, in the case of very small grain sizes, the saturation is possibly due to a balance between improvement in performance and overhead due to creation of new threads. However, no definitive results have been produced on this matter. \\
 
 \section{Discussion}
-As discussed previously, the number of threads used should reflect the number of physical threads and the bandwidth variation with grain size should reflect the memory hierarchy. In fact we observed clear changes in measurements for these two parameters, yet the correspondence is not consistent with our prediction.
+As discussed previously, the number of threads used should reflect the number of physical threads and the bandwidth variation with grain size should reflect the memory hierarchy. In fact we observed clear changes in measurements for these two parameters, yet the correspondence is not consistent with our prediction. This also stresses the fact that after our optimisation, the library becomes memory-bound as opposed to core-bound. Further optimiation efforts could be made on optimising memory usage. However, the upper limit to this approach is limited by $~75%$ of the theoretical maximum memory bus bandwidth. 
 
-The performance is affected by a variety of factors, some tested, and some not within our control. Particularly, the servers we experimented with are based on Non-Uniformed Memory Access architecture, in which access to different part of the RAM takes different amount of time as seen by each processor. For threads accessing data from immediately neightbouring RAM certainly take less time than if the threads are on the other core. However, this effect is hidden by Intel TBB which automatically balances different threads. This is the case even in realistic situation whereby the upstream application writes only to RAM associated with it. \\
+The performance is affected by a variety of factors, some tested, and some not within our control. Particularly, the servers we experimented with are based on Non-Uniformed Memory Access architecture, in which accesses to different part of the RAM take different amount of time as seen by each processor. Threads accessing data from immediately neightbouring RAM certainly take less time than their counterparts on the other core. However, this effect is hidden by Intel TBB which automatically balances loads in different threads. The uneven distribution of data into the two RAMs are realistic since the upstream application writes only to the RAM associated with it. \\
 
-HyperThreading and TurboBoost have undertermined influence on the program. Hyperthreading might have negative impact on performance as seen by a comparison between machines with and without HyperThreading switched on. TurboBoost should in theory improve performance by overclocking, yet this has not been tested. 
+HyperThreading and TurboBoost have undetermined influence on the program. Hyperthreading might have negative impact on performance as seen by a comparison between machines with and without HyperThreading switched on (server 83 on, 85 off). TurboBoost should in theory improve performance by overclocking, yet this has not been tested. Neither did we disable TurboBoost in our tests. This possible renders the results less reliable.
 
 In addition, the bandwidth measurments heavily rely on the number of frame frames used. Using a high number potentially exercises the cache hierarchy better and improves the bandwidth. 
 
