@@ -3,8 +3,7 @@ require('numpy')
 import numpy as np
 require('matplotlib')
 from matplotlib import pyplot as plt
-require('scipy')
-from scipy.interpolate import spline
+
 
 grain_size = np.array([3528/7,3528/6, 3528/4, 3528/3,3528/2,3528,3528*3, 3528*7,3528*9, 3528*21, 3528*59, 3528*63, 3528*177,3528*413,3528*531,3528*1239])
 
