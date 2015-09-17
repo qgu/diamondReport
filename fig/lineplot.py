@@ -44,12 +44,13 @@ ax.set_ylabel('Bandwidth(MB/s)')
 
 font = {'family' : 'normal',
         'weight' : 'bold',
-        'size'   : 16}
+        'size'   : 18}
 
-plt.legend( [line1[0], line2[0], line3[0]], ['Server77', 'Server 85', 'Server 83'] )
+plt.legend( [line1[0], line2[0], line3[0]], ['Server 77', 'Server 85', 'Server 83'],loc = 'upper left')
+ax.text(13,100, 'grain size = 3528',
+        color='green', fontsize=15)
 
-
-plt.savefig('./fig/lineplot_threads.eps', format='eps', dpi=300)
+plt.savefig('./fig/lineplot_threads_small_grain.eps', format='eps', dpi=300)
 plt.show()
 
 

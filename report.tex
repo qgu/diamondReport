@@ -5,33 +5,34 @@
 \usepackage{textcomp} % proper tilde
 \usepackage{multirow}
 \usepackage{cite}
+%\usepackage{subfigure}
+\usepackage{subfig}
 
 \begin{document}
 
 \title{High Performance Detector Software\\
 for PERCIVAL Detector}
 
-\author{~Q. Gu}
+\author{Qiushi Gu \\Supervised by Ulrik K. Pedersen}
 
 % Page Header
 \markboth{Diamond Light Source Summer Internship Program Report}%
-{Shell \MakeLowercase{\textit{et al.}}: Feasibility Study of PERCIVAL Data
-Acquisition Backend Architecture}
+{Gu \MakeLowercase{\textit{et al.}}: High Performance Detector Software.}
 
 \maketitle
 
 \begin{abstract}
-
+The next-generation X-Ray detector, Percival, is able to output at 6GB/s. It aims to achieve real-time capturing, pre-processing and storing of images which current detectors are incapable of achieving. However, real-time processing becomes challenging at this scale of data bandwidth. This report explains how a pre-processing library based on the C++ programming language had been built, tested, profiled and optimised, using tools including BOOST Unit Test Framework, OProfile, Intel Threading Building Blocks (TBB) and Intel Advanced Vector Extensions (AVX) instruction set. The optimised library is capable of performing at $\bf{(2.5\pm10\%)}$GB/s on one node of an eight-node cluster, exceeding the bandwidth requirement. 
 \end{abstract}
 
 \section{Introduction}
 
-\IEEEPARstart{T}{he} PERCIVAL\cite{wunderer2014percival} (Pixelated, Energy Resolving CMOS Imager, Versatile And Large) detector is a new generation X-ray detector aiming to achieve real-time data capturing, pre-processing and storing. This report describes how a highly optimised C++ library had been designed to pre-process Percival output. \\ 
-Percival is capable of outputing \texttildelow 13M pixels (3717 $\times$ 3528 pixels) at 120fps (frames per second). Each pixel is stored as a 16-bit integer packed from 3 separate integer fields, knowns as the Fine, Coarse and Gain bits. The total data rate is \texttildelow 6GB/s. The meaning of the packed integer is not at all obvious to users without being converted to numbers proportional to intensity. Preprocessing is there required to do this conversion.
+\IEEEPARstart{T}{he} PERCIVAL\cite{wunderer2014percival} (Pixelated, Energy Resolving CMOS Imager, Versatile And Large) detector is a next-generation X-Ray detector aiming to achieve real-time data capturing, pre-processing and storing. This report describes how a highly optimised C++ library had been designed to pre-process Percival output. \\ 
+Percival is capable of outputing \texttildelow 13M pixels (3717 $\times$ 3528 pixels) at 120fps (frames per second). Each sample frame is accompanied by a reset frame for calibration purpose. The total data rate is \texttildelow 6GB/s. Each pixel is stored as a 16-bit integer packed from 3 separate integer fields, knowns as the Fine (F), Coarse (C) and Gain (G) bits. The meaning of the packed integer is not at all obvious to users before this number is converted to incident X-Ray intensity. Preprocessing is therefore required to do this conversion.
 
 \begin{table}[h]
 \centering
-\label{bit_arrangement}
+
 \begin{tabular}{r l c c c r l c c c c c c  r l r}
 \hline
 \multicolumn{1}{|c|}{} & 
@@ -41,109 +42,104 @@ Percival is capable of outputing \texttildelow 13M pixels (3717 $\times$ 3528 pi
 \hline
  15 & 14 & & & & 11 & 10 & & & & & & & 2 & 1 & 0 \\
 \end{tabular}
-\caption{Bit arrangement.}
+\caption{Bit arrangement.}\label{bit_arrangement}
 \end{table}
 
-The processing backend consists of a cluster of eight nodes (numbered 77, 78, 83~88) each receiving a full frame of data. There are existing networks that evenly distribute the output to each cluster node. The pre-processing library therefore needs to process at \texttildelow 750MB/s per node. As 5 physical threads need to be set aside for other applications running on the server (receiving frames and writing to disc), the computing power is not fully accessible. 
+The processing backend consists of a cluster of eight server nodes (Table \ref{servers}\footnote{Cache information can be found at /sys/devices/system/cpu/cpu*/cache/index*/* on Linux.})\cite{cite:hardwarespec} each receiving a full frame of data. There are existing networks that evenly distribute the output to each cluster node. The pre-processing library therefore needs to process at \texttildelow 750MB/s per node. In actual working environment, 5 physical threads need to be set aside for other applications running on the server (receiving frames and writing to disc). The computing resources and cache spaces are not fully accessible. 
 
 \begin{table}[h]
 \centering
-\label{servers}
+
 \begin{tabular}{l | c c}
 \hline
 Micro-architecture & Intel SandyBridge & Intel IvyBridge \\
 \hline
 Processor Number& 	E5-2670 0	& E5-2670 v2 \\
 Number of machines&	2		& 6	\\
+Server number    & 77,78    & 83,84,85,86,87,88 \\
 L1D cache	&	32K(8-way)		& 32K(8-way) \\
-L2 cache (shared)  &	256K	(8-way)	& 256K(8-way) \\
-L3 cache (LLC, shared)	&	20MB (20-way)	& 25MB (20-way) \\
+L2 cache  &	256K	(8-way)	& 256K(8-way) \\
+L3 cache (LLC\footnote{Last-Level Cache.}, shared)	&	20MB (20-way)	& 25MB (20-way) \\
 Core per processor  &	8		& 10	\\
 Number of processors  &	2		& 2	\\
-Memory bandwidth    &51.2GB/s       & \\
 \hline
 Other supports  & 
-\multicolumn{2}{|c}{AVX, HyperThreading, TurboBoost}  	\\
+\multicolumn{2}{|c}{HyperThreading, TurboBoost, AVX}  	\\
 \hline
 \end{tabular}
-\caption{Specification of Server Nodes}
+\caption{Specification of Server Nodes.}\label{servers}
 \end{table}
 
-
-From the pre-processing library's perpective, upstream functions stream detector output into local memory buffers from which the library takes its input. Downstream applications then write data from the buffer to disc after the library fills the memory buffer with processed data. \\ \\
+From the pre-processing library's perpective, upstream functions deliver detector output to local memory buffers from which the library takes its input. Downstream applications then write data from the buffer to disc after the library fills the memory buffer with processed data. \\ \\
 Processing steps required of this library are as follows,
 \begin{itemize}
- \item \textbf{Step 1: ADC coarse, ADC Fine, and Gain decoding} Extract bits from packed 16-bit integer and convert digitized figures to floating point numbers (Calibration).
+ \item \textbf{Step 1: ADC coarse, ADC Fine, and Gain decoding} Extract bits from packed 16-bit integer and convert digitised output to floating point numbers (Calibration),
 	\begin{equation}
-		ADU(i,j) = \frac{C - O_F}{G_F} - \frac{F - O_F}{G_F}
+		ADU(i,j) = \frac{C - O_C}{G_C} - \frac{F - O_F}{G_F}.
 	\end{equation}
- \item \textbf{Step 2: Gain Multiplication} Multiply previous results by a factor depending on location.
+ \item \textbf{Step 2: Gain Multiplication} Multiply previous result by a gain factor,
 	\begin{equation}
-		I_{sample}(i,j) = ADU(i,j) \times K(G_{sample}(i,j))
+		I_{sample}(i,j) = ADU(i,j) \times K(G_{sample}(i,j)).
 	\end{equation}
-where K is a constant depending on pixel location and value of GainBits.	
- \item \textbf{Step 3: CDS subtraction} Subtract reset frame that has gone through previous two steps if the corresponding pixels in sample frame has gain bit 0b00.
+where K is a constant depending on pixel location and value of gain.	
+ \item \textbf{Step 3: CDS subtraction} Subtract reset frame that has gone through previous two steps if the corresponding pixels in sample frame has gain bit 0b00,
 	\begin{equation}	
-		I_0(i,j) = I_{sample}(i,j) - I_{reset}(i,j) \times \delta(G_{sample}=0b00)
+		I_0(i,j) = I_{sample}(i,j) - I_{reset}(i,j) \times \delta(G_{sample}=0b00).
 	\end{equation}
- \item \textbf{Step 4: Dark Image Subtraction} Subtract a constant frame from the result of previous step.
+ \item \textbf{Step 4: Dark Image Subtraction} Subtract a constant frame from the result of step 3,
 	\begin{equation}
-		I(i,j) = I_0(i,j) - Dark(i,j)
+		I(i,j) = I_0(i,j) - Dark(i,j).
 	\end{equation}
 \end{itemize}
 
-$Gc, Gf, Oc, Of, K, Dark$ are all constant arrays intrinsic to the detector and Analogue to Digital Converters (ADCs), supplied before data is gathered. It was required that Step 1 could be run separately. Two functions are written, one for Step 1 only and the other for a combined algorithm using Step 1 to Step 4. As further linear corrections might still be needed, the function and calibration data container are organiseded such that further computation steps can be added easily.\\
+$Gc, Gf, Oc, Of, K, Dark$ are all constant arrays intrinsic to the detector and Analogue to Digital Converters (ADCs) and are supplied before real data is gathered (see Table \ref{array_dims}, different from specification, see section \ref{sec:memusage}). G refers to gain and O refers to offset. They are constants describing linear characteristics of the ADCs. It was required that Step 1 could be run separately. Also for easier testing of results, each step constitutes an individual function and the four steps combine to give one combined function. As further linear corrections might still be needed, the function and calibration data container are organiseded such that further computation steps can be added easily.\\
 
 %table of sizes of arrays.
-\begin{table}[h]
+\begin{table*}[t]
 
-\label{array_dims}
 \centering
-\begin{tabular}{l c c c}
+\begin{tabular}{l c  | c c c  |c c c c}
 \hline
-Array 							& Width(pixels)	 & Datatype  &Size\\
-\hline\hline
-Sample/Reset Frame       				& 3528 		& uint16     &25MB\\
+&&
+\multicolumn{3}{c|}{Origional}&
+\multicolumn{3}{c}{Transposed and Aligned}&\\
+\hline \hline
+Array 							& Datatype  &Height(pixels) & Width(pixels)	    &Size       &Height(pixels) & Width(pixels)	    &Size   &Remark\\
 \hline
-Output from step 4					& 3528		& float32    &50MB\\
+Sample/Reset Frame       		& uint16    &3717		    & 3528 		        &25MB       & 3528		    & 3717 		        & 25MB  &Not aligned\\
 \hline
-Dark(unaligned)					 	& 3528		& float32     &50MB\\
+Output from step 4				& float32   &3717	        & 3528		        &50MB       & 3528	        & 3717		        & 50MB  &Not aligned\\
 \hline
-Dark(aligned)				 		& 4032 		& float32     &57MB\\
+Dark        					& float32   &3717	        & 3528		        &50MB       & 3528	        & 4248		        & 57MB  \\
 \hline
-$G_C/G_F/O_C/O_F$ unaligned 				& 7   		 & float32    &50MB\\
+$G_C/G_F/O_C/O_F$				& float32   & 7   	        &3528	            &96kB       & 3528   	    & 8 	            & 110kB \\
 \hline
-$G_C/G_F/O_C/O_F$ aligned 				& 8    		& float32     &57MB\\
+$K_{00}/K_{01}/K_{10}/K_{11}$   & float32   &3717	        & 3528              &50MB       & 3528	        & 4248              & 57MB  \\
 \hline
-$K_{00}/K_{01}/K_{10}/K_{11}$ unaligned 	& 3528 & float32     & 116KB\\
-\hline
-$K_{00}/K_{01}/K_{10}/K_{11}$ aligned 		& 4032 & float32     & 102KB\\
-\hline
-
 \end{tabular}
-\caption{Array dimensions}
-\end{table}
+\caption{Array dimensions}\label{array_dims}
+\end{table*}
 
-A python version of processing step 1 was implemented as a prototype. This code was then used to assit and check development in C++. The C++ library was designed with an automatic test suite as scaffolding (Test-Driven Development). Statistical profiling tool OProfile was used to identify the bottleneck limiting library performance. Initial optimisation effort was spent primarily on making room for compiler optimisation using GCC compiler. In a later stage, the library also incorporated more advanced tools including Intel Threading Building Blocks (TBB) and Intel Advanced Vector Extensions (AVX). The main approaches adopted will be discussed in section \ref{sec:perf}
+A python version of processing step 1 was implemented as a prototype\footnote{Written by Arvinder Palaha.}. This code was then used to assist and check development in C++. The C++ library was designed with an automatic test suite as scaffolding (Test-Driven Development). Statistical profiling tool OProfile was used to identify the bottleneck limiting library performance. Initial optimisation effort was spent primarily on making room for compiler optimisation using the GCC compiler. In a later stage, the library also incorporated more advanced tools including Intel Threading Building Blocks (TBB)\cite{TBBbook} and Intel Advanced Vector Extensions (AVX)\cite{AVX}. The main approaches adopted will be discussed in section \ref{sec:perf}
 
 
 \section{Test Driven Development (TDD)} %page2
 
-The development process was guided by a set of tests which act as a specifications to check the code against. Each function is written in order to pass the tests. The tests are run each time some part of the code has been modified. The tests utilized BOOST Unit Test Framework (UTF). These tests follows the following guidelines.
+The development process was guided by a set of tests which act as specifications to check the code against. Each function is written in order to pass the tests, which were run after each modification. The tests utilised BOOST Unit Test Framework (UTF)\cite{BOOST}. These tests follow the following guidelines.
 \begin{itemize}
- \item \textbf{Range Tests:} Test if array dimensions are consistent with table.
+ \item \textbf{Range Tests:} Test if array dimensions are consistent with Table \ref{array_dims}.
  \item \textbf{Computation Tests:} Test if the result returned from the function agrees with manually calculated results within $0.01\%$.	
 \end{itemize}
 
-\section{Organisation}	%page2
-The library builds upon basic constructs including the memory buffer, the calibration data container, the data file location container, exception classes and functions that check data validity. More advanced features important to optimisation such as the parallelised algorithms and algorithms assisted by Intel Advanced Vector Extensions are also supplied in separate header files. In order to accommadate these extended features, the basic constructs have been adapted slightly. Particularly, all processing functions are implemented using function objects with a thin function wrapper. A few Python scripts have also been included to facilitate processing profiling and timing results.
+\section{Library Design}	%page2
+The library builds upon basic constructs including the memory buffer, the calibration data container, the data file location container, exception classes and functions that check data validity. More advanced features important to optimisation such as the parallelised algorithms and algorithms assisted by AVX are also supplied in separate header files. In order to accommadate these extended features, the basic constructs have been adapted slightly. Particularly, all processing functions were implemented using function objects with thin function wrappers. A few Python scripts have also been included to facilitate processing profiling and timing results.
 
 \subsection{Basic Constructs}
-Firstly, the most fundamental construct is a templated structure, percival$\_$frame, containing information about a frame, including width, height and a pointer to memory buffer containing data in the frame, organised as contiguous linear array in memory. This structure underlies all functions that use arrays. Another flavour of of this structure is capable of creating, deleting and aligning memory to 4K memory page. However, this structure should only be used in testing environment as its memory management is not safe to use without knowing its inner working. Secondly, calibration data come in the form of percival$\_$frame and are grouped into one structure percival$\_$calib$\_$params that can be passed to functions when calibration arrays are needed. These arrays are preloaded and pre-processing before processing starts. Finding the inverses of $G_C$ and $G_F$ is done in preloading. This pre-loading can be customised using user-defined functions. Thirdly, non-parallelised processing algorithm for each step and ADC decode are supplied. \\
-In conjunction with these fundamental building blocks, other helper tools including exception classes, functions that check data validity (range, NULL pointer), an HDF5 loader, an HDF5 writer and a structure containing locations of calibration files were also supplied. However the HDF5 loader and writer are not extensively tested and should not be used in release version. \\
+The most fundamental construct is a templated structure, percival$\_$frame, containing information about a frame, including width, height and a pointer to memory buffer containing data in the frame. The data is organised as a contiguous, linear array in memory. This structure underlies all functions that use arrays. Another flavour of of this structure is capable of creating, deleting and aligning memory to hard-coded memory boundaries. However, this structure should only be used in testing environment as its memory management is not safe to use without the user knowing its inner working. Calibration data arrays come in the form of percival$\_$frame and are grouped into one structure percival$\_$calib$\_$params that can be passed to functions when calibration arrays are needed. These arrays are preloaded and pre-processed before processing starts. Finding the inverses of $G_C$ and $G_F$ is done in preloading (section \ref{sec:optimisation}). Currently the library preloads data from HDF5 files into the memory buffer. Parameters can be loaded from other sources by a user-defined loading and preprocessing function. Non-parallelised processing algorithm for each step and ADC decode are supplied. \\
+In conjunction with these fundamental building blocks, other helper tools including exception classes, functions that check data validity (range, NULL pointer), an HDF5 loader, an HDF5 writer and a structure containing locations of calibration files were also supplied. However the HDF5 loader and writer have not extensively tested and should not be used in release version.
 
 \subsection{Parallelised Algorithm}
-A parallelised version of algorithm containing all four steps are written. They are suffixed with $\_pf$. Other processing steps are also supplied and are based on the same function objects as used basic, non-parallelised functions.
+Parallelised code is based on non-parallelised code and uses parallel$\_$for from TBB. These functions are suffixed with $\_$pf.
 
 \subsection{AVX algorithm}
 A function object written in AVX intrinsics is available for combined processing algorithm encompassing step 1 to 4. They have to be compiled with AVX instruction set enabled and run on an AVX-enabled operating systems and processors. More descriptions about AVX and intrinsics are in section \ref{Vec}.
@@ -153,29 +149,33 @@ Tools for generating test calibration parameters, for processing OProfile output
 
 \section{Performance Analysis and Tuning} %page3&4
 \label{sec:perf}
-The critical requirement on this library is processing time, as opposed to other aspects such as power consumption and memory usage. Therefore, the key indicator of performance is the bandwidth, defined as amount of data processed per second, counting both the sample and reset frames. Processing one sample and one reset frame in one second corresponds to a processing rate of 52MB/s. The general approach to performance tuning starts with profiling, which gives detailed report on how much time/memory were spent in each function/line of code/file. These key indicators reflect the bottleneck of the target program and are very important, though not necessarily accurate, guide on how best to optimise the library. Typically, target codes are either memory-bound or core-bound (bounded by computation). There are standard approaches correspond to either category. These tuning is often specific to hardware, particularly on the micro-architecture of the system.
+The requirement on this library is processing time, as opposed to other aspects such as power consumption and memory usage. Therefore, the key indicator of performance is the bandwidth, defined as amount of data processed per second, counting both the sample and reset frames. Processing one sample and one reset frame in one second corresponds to a processing rate of 52MB/s. The general approach to performance tuning starts with profiling, which gives detailed report on how many events in each function/line of code/file. Important events include unhalted clock cycles, instructions retired, LLC misses and memory accesses. These indicators reflect the bottleneck of the target program. They are very important, though not necessarily accurate, guides on how best to optimise the library. Typically, target codes are either memory-bound or core-bound (bounded by computation). There are standard approaches corresponding to either category\cite{themanual}. Tuning is often specific to hardware, particularly on the micro-architecture of the system.
 \subsection{Identify the Hotspots}
 \subsubsection{Profiling Tools}
-In our study, we have considered both instrumentation and statistical profiling tools. Instrumentation, with gprof as an example, requires compilers to add extra code to user code, thus incurring more errors in measurement. On the other hand, statistical profiling uses hardware counters to count system interrupts when certain events happen on the hardware level. This, though inevitably slows down the processor, is known to generate more accurate results. We thus used OProfile, a statistical profiling tool, to study our system. As hardware counters are used to profile, the OProfile events are hardware-dependent. However, similar events can be found on different platforms, tough often with different names. Some of the OProfile event count are ready to use in the state they are generated, but some require processing before they can be truly useful. The Intel Optimisation Manual gives an extensive guide on how to use these hardware events. The key performance metrics useful to our tests are listed in table \ref{Operfmetrics}. These metrics are all ratios of duration-dependent quantities and are independent of duration of profiling. 
+In our study, we have considered both instrumentation and statistical profiling tools. Instrumentation, with gprof as an example, requires compilers to add extra code to user code, thus incurring more errors in measurement. On the other hand, statistical profiling uses hardware counters to count system interrupts when certain events happen on the hardware level. This, though inevitably slows down the processor, is known to generate more accurate results. We thus used OProfile\cite{OPerf}, a statistical profiling tool, to study our system. As hardware counters are used to profile, the OProfile events are hardware-dependent. However, similar events can often be found on different hardwares. Some of the OProfile events are ready to use in the state they are generated, but some require processing before they can be truly useful. The Intel Optimisation Manual\cite{themanual} gives an extensive guide on how to use these hardware events. The key performance metrics useful to our tests are listed in Table \ref{Operfmetrics}. These metrics are all ratios of duration-dependent quantities and are independent of duration of profiling. 
 
 \begin{table*}[ht]
 \centering
 \begin{tabular}{l l l c c}
 \hline
-Type 					& Metric   			& Explanation  					& min sampling rate	\\
+Type 					& Metric/Event   			& Explanation  					& min sampling rate	\\
 \hline\hline
 \multirow{3}{*}{Time}
-& CLK$\_$CYCLE$\_$UNHALTED 						& No of clock cycles 				& 10000			& event\\
-& INST$\_$retired  							& instructions counted in the retirement unit 	& 6000			& event\\
-& CLK$\_$CYCLE$\_$UNHALTED / INST$\_$retired 				& cycle per instruction				& -			& metric\\
+& CLK$\_$CYCLE$\_$UNHALTED 						& No of clock cycles 				& 10000			\\
+& INST$\_$retired  							& instructions counted in the retirement unit 	& 6000		\\	
+& CLK$\_$CYCLE$\_$UNHALTED / INST$\_$retired 				& cycle per instruction	(CPI)			& -			\\
 
 \hline
 
-\multirow{3}{*}{Cache}
-& LLC$\_$MISSES								& llc misses					& 6000			& event\\
-& L2$\_$lines$\_$in							& Incomming cache lines to L2			& 100000		& event\\
-& LLC$\_$misses / INST$\_$retired 					& llc misses per instruction			& -			& metric\\
-& L2$\_$lines$\_$in / INST$\_$retired 					& L2 misses per instruction 			& -			& metric\\
+\multirow{6}{*}{Cache}
+& LLC$\_$MISSES								& llc misses					& 6000			\\
+& L2$\_$lines$\_$in							& Incoming cache lines to L2			& 100000	\\	
+& mem$\_$trans$\_$retired                   & Memory transactions                   & 2000000     \\ 
+
+& LLC$\_$misses / INST$\_$retired 					& llc misses per instruction			& -			\\
+& L2$\_$lines$\_$in / INST$\_$retired 					& L2 misses per instruction 			& -			\\
+& 64 * mem$\_$trans$\_$retired * clock$\_$frequency / CLK$\_$CYCLE$\_$UNHALTED 					& memory bandwidth 			& -			\\
+
 
 \hline
 \end{tabular}
@@ -183,36 +183,41 @@ Type 					& Metric   			& Explanation  					& min sampling rate	\\
 \end{table*}
 
 \subsubsection{Interpreting OProfile Results}
-OProfile sets a constant upper limit, the sampling rate, on the hardware counters. The counters count and accumulate system events and generate an interrupt once the upper limit is reached. The number of these interrupts, termed number of samples, is collected and reported as OProfile output. The actual number of events is approximately the product of sampling rate and number of samples collected. Too high a sampling rate reduces the resolution of profiling. Too small a sampling rate results in buffer overflow, which could be solved by setting a higher buffer size or raising the sampling rate. In addition, it has been experimentally observed that counting too many events simultaneously affects profile output in an undeterministic manner. As a guide, count only less than 6 events each time. \\
+OProfile sets a constant upper limit, the sampling rate, on the hardware counters. The counters accumulate system events and generate interrupts once the upper limit is reached. These interrupts are OProfile samples and are collected and reported as OProfile output. The actual number of events is approximately the product of sampling rate and number of samples collected. Too high a sampling rate reduces the resolution of profiling. Too small a sampling rate results in buffer overflow, which could be solved by setting a higher buffer size or raising the sampling rate. 
+LLC miss rate and L2 miss rate are the major indicators of memory bound. 20\% miss rate is acceptable\cite{themanual}. High Cycle Per Instruction (CPI) is often shows room for improvement. For vectorised code, a CPI below 1 is optimal.
+In addition, it has been experimentally observed that simultaneously counting too many events affects profile output in an undeterministic manner. As a guide, count only less than 6 events each time. \\
 
-OProfile is also able to give line-by-line profiling results along side the source code. This feature helps to get a more fine-grained idea of where the hotspot is. However, the indicated location often lags the real location by a few instructions, also known as skids. These cannot be avoided using current hardware. \\
+OProfile is also able to give line-by-line profiling results along side the source code. The source code needs to be compiled with debug information. This feature helps to get a more fine-grained idea of where the hotspot is. However, the indicated location often lags the real location by a few instructions, also known as skids. These cannot be avoided using current hardware. Samples also tend to deceivingly accumulate at the start or end of the branches. \\
 
-On a side note, the CLK$\_$CYCLE$\_$UNHALTED event is not suitable as a timer. For machines with TurboBoost enabled, the clock rate changes with overclocking. In addition, CLK$\_$CYCLE$\_$UNHALTED event counts cycles in all CPUs rather than the CPU that spawns the program. The time thus calculated will be ten or more times higher than measured using wall clock.  \\
+The CLK$\_$CYCLE$\_$UNHALTED event is not suitable as a timer. For machines with TurboBoost enabled, the clock rate changes with overclocking. In addition, CLK$\_$CYCLE$\_$UNHALTED event counts cycles in all CPUs rather than the CPU that spawns the program. The time thus calculated will be ten or more times higher than measured using wall clock.
 
 \subsection{Optimising the Algorithm}
-We performed baseline measurements on both single-threaded and multi-threaded codes, which indicated the floating-point computation in equation 1 limits the bandwidth. We thus started on reducing clock cycles spent on computation.
+\label{sec:optimisation}
+We performed baseline measurements on both single-threaded and multi-threaded codes, which indicated the floating-point computation in equation (1) limits the bandwidth. We thus started on reducing clock cycles spent on computation.
 \subsubsection{Reducing Computation Time}
 Floating point divisions are inherently much more costly than multiplication and addition. The first step to optimisation lies in converting $G_C$ and $G_F$ to their inverses before actual computation starts. During the processing, division by $G_C$ and $G_F$ is replaced by multiplication of their inverses. These operations are done internally and do not require supplier of calibration data to perform extra computation.\\
-Similarly, bitwise operations were also used to replace integer modulus and division.\\
+The code was also restructured such that bitwise operations can be used in place of integer modulus and division. Direct replacement of division and modules by bitwise operations is not effective as this would have been done either by the compiler or on the hardware level.\\
 
-\subsection{Other Optimisation}
-GCC compiler offers three levels of optimisation with the -O1, -O2, -O3 command line options. One explicit hint to the compiler is that variables were declared out of a loop to avoid repeated allocation and deallocation of memory. Furthermore, pointer dereferencing and function calls overheads are significant on micro-second scale and are both avoided in loops. Other techniques provided by C++ language was also applied, for example, const keyword is used whenever possible, though the speed up is not as spetacular. 
+\subsubsection{Other Optimisation}
+GCC compiler offers three levels of optimisation with the -O, -O2, -O3 command line options\cite{gcc}. One explicit hint to the compiler is that variables were declared out of a loop to avoid repeated allocation and deallocation. Furthermore, pointer dereferencing and function call overheads are significant on micro-second scale and were both avoided in loops. Other techniques provided by C++ language was also applied, for example, const keyword is used whenever possible, though the speed up is not as spetacular. 
 
 \subsubsection{Parallelisation}
-Intel Threading Building Blocks (Intel TBB) was employed to parallelize the library. Advantages of Intel TBB include an automatic management of task scheduling and load-balancing. Using its automatic scheduler, the number of threads used is determined at run-time and has been optimised to achieve best performance, usually when logical threads match physical threads. An integer, $N$, can also be supplied to the task scheduler at initialisation and this generates $(N-1)$ working threads, with one thread that spawns the task. \\
+TBB was employed to parallelize the library. Advantages of Intel TBB include an automatic management of task scheduling and load-balancing. Using its automatic scheduler, the number of threads used is determined at run-time and has been optimised to achieve best performance. This usually happens when logical threads match physical threads. An integer, $N$, can also be supplied to the task scheduler at initialisation and this generates $(N-1)$ new working threads and one thread that spawns the task. \\
 
-TBB builds upon C++ object-oriented paradigm and are more user-friendly than conventional pthread. The parallel$\_$for templated function and the pipeline pattern have both been tested with our library. The results are peculiar. The use of Pipeline pattern doubles the bandwidth of the target function. Overhead due to TBB scheduler when Pipeline patter is used is ten times that when parallel-for template function is used. As a result, Pipeline is a better choice when the bandwidth is \texttildelow 600MB/s and parallel-for is better at bandwidth \texttildelow 2GB/s. \\
+TBB builds upon C++ object-oriented paradigm and are more user-friendly than conventional pthread. The parallel$\_$for templated function and the pipeline pattern have both been tested with our library. The results are peculiar. The use of Pipeline pattern doubles the bandwidth of the target function. Overhead due to TBB scheduler when Pipeline patter is used is ten times that when parallel-for template function is used. As a result, Pipeline is a better choice when the bandwidth is \texttildelow 600MB/s and parallel$\_$for is better at bandwidth \texttildelow 2GB/s. \\
 
-The parallel$\_$for template function uses tbb::blocked$\_$range object to segment the iteration space. This iterator object splits ranges by recursively halving the interval. Split stops when the current size of the subrange is strictly smaller than the grain size specified. This introduces some subtleties here. Firstly, algorithm based on AVX requires each sub-range to be multiples of 7 which is not trivial when recursive splitting is used. Secondly, the subranges are a mixtures of different sizes as the overall range has factors other than 2 in general. Therefore, in the implementation, splitting is performed on height of frame (0\texttildelow3717) rather than on the entire array (0\texttildelow13M). The subranges are then guaranteed to be multiples of the grain size. The user has to ensure that the grain size is a multiple of seven, otherwise exception will be thrown. Furthermore, when grain size is varied to tune the library, a combined effect of subranges of various sizes will be observed. Therefore too fine a variation in grain size would not yield very meanful results.
+The parallel$\_$for templated function uses tbb::blocked$\_$range object to segment the iteration space. This iterator object splits by recursively halving the interval. Split stops when the current size of the subrange is strictly smaller than the grain size specified. This introduces some subtleties. Firstly, algorithm based on AVX requires each sub-range to be multiples of 7 which is not trivial when recursive splitting is used. Therefore, in the implementation, splitting is performed on number of grains rather than on number of pixels. The subranges are then guaranteed to be multiples of the grain size. The user has to ensure that the grain size is a multiple of seven, otherwise exception will be thrown. Also the grain size also needs to be factors of the number of pixels, otherwise a portion of the image will not be processed.
+
+Choice of grain size and number of threads used is another point for further tuning.
 
 \subsubsection{Vectorisation}
 \label{Vec}
-Intel IvyBirdge and SandyBridge architecture both allow Intel Advanced Vector Extensions (AVX) instruction sets. Intel AVX utilizes 256-bit wide YMM registers to perform Single Instruction Multiple Data (SIMD) on packed floating point numbers. AVX theoretically has twice the computation power, compared to previous Streaming SIMD Extensions (SSE, using 128-bit XMM registers) which is automatically enabled by many compiler optimisers (-O3 option in gcc). \\
-There are currently three approach to utilise Intel AVX, assembly code, intrinsics and Intel Integrated Performance Primitives (IPP). One great aspect of IPP is that commonly used multi-media processing functions are written in C functions and implemented using vectorised code. It is more user-friendly when complex computations are concerned. Assembly code, on the other hand, lends much more flexibility with a price of readability. \\
+Intel IvyBirdge and SandyBridge architecture both have AVX instruction set enabled. Intel AVX utilizes 16 256-bit wide YMM registers to perform Single Instruction Multiple Data (SIMD) operations on packed floating point numbers\cite{themanual}. AVX theoretically has twice the computation power of Streaming SIMD Extensions (SSE, using 128-bit XMM registers) which is automatically enabled by many compiler optimisers. \\
+There are currently three approaches to vectorize code, assembly code, intrinsics and Intel Integrated Performance Primitives (IPP). One great aspect of IPP is that commonly used multi-media processing functions are written in C functions and implemented using vectorised code. It is more user-friendly when complex computations are concerned. Assembly code, on the other hand, lends much more flexibility at a price of readability. \\
 
-Among the three options, Intel Intrinsics are particularly suitable for our simple computations at hand. Intrinsics are a set of C style functions incorporated into some compilers (including GCC) to facilitate use of new instruction set. The basic data flow involves first packing floating point data into $\_\_$m256 datatype, performing operations using intrinsic functions, and store the data to a memory buffer. The major operations used has been listed in table \ref{ops}. $\_\_$m256 datatype can contain 8 packed single precision float (ps) or 4 packed double precision float (pd). Intrinsics working on these datatypes have $\_$ps and $\_$pd sufficies to distinguish the operand. Bit or logical operations can be done only on packed int32 ($\_\_$mm256i with $\_$epi suffix) and conversion or casting is needed. Value of each packed element remains the same after conversion and Bit arrangement remains the same after casting. These two functions are also supplied. \\
+Among the three options, Intel Intrinsics are particularly suitable for our simple computations at hand. Intrinsics are a set of C-styled functions incorporated into some compilers (including GCC) to facilitate the use of AVX instruction set. The basic data flow involves first packing floating point data into $\_\_$m256 datatype, performing operations on $\_\_$mm256 using intrinsic functions, and store the data to a memory buffer. Cost of major operations used has been listed in Table \ref{ops}. $\_\_$m256 datatype can contain 8 packed single precision float (ps) or 4 packed double precision float (pd). Intrinsics working on these datatypes have $\_$ps and $\_$pd sufficies and $\_$mm256 prefix. Bit or logical operations can be done only on packed int32 ($\_\_$mm256i with $\_$epi function suffix) and conversion or casting is needed. Conversion preserves values and casting preserves bit arrangement. These two functions are also supplied by intrinsics. \\
 
-Compared with the operations themselves, loading and storing between memory buffer and $\_\_$m256 datatype present more opportunities for tuning. Accessing memory unaligned with 256-bit boundaries causes minimal improvement of AVX from SSE. In our situation, each access to a sample and reset frame pair is accompanied by 4 accesses to gain lookup tables, 1 accesses to dark image table, and 1/126 accesses to $G_C, O_C, G_F, O_F$. Forcing the sample and reset frames to align causes excessive memory copying and is not practical. However, aligning the rest of the 5 accesses is easy. We therefore insert one zero element for every 7 element in the calibration arrays. Padding significantly improved performance. \\
+Compared with the arithmetic operations, loading and storing between memory buffer and $\_\_$m256 datatype present more opportunities for tuning. Accessing memory unaligned with 256-bit boundaries causes minimal improvement of AVX from SSE\cite{themanual}. In our situation, each access to a sample and reset frame pair is accompanied by 4 accesses to gain lookup tables, 1 access to dark image table, and 1/126 accesses to $G_C, O_C, G_F, O_F$. Forcing the sample and reset frames to align causes excessive memory copying and is not practical. However, aligning the rest of the 5 accesses is easy. We therefore insert one zero element after every 7 elements in the calibration arrays. Padding significantly improved performance (see Fig.\ref{fig:opstep}). \\
 
 When AVX is not available, enabling -O3 optimisation using GCC compiler enables auto-vectorisation using SSE instruction set by the compiler. SSE2 is useful in our application where floating point algorithms are concerned. Auto-vectorisation does not always realise the potential of SSE and manually coding vectorised code might be better. \\
 
@@ -242,83 +247,111 @@ Instruction & Operation & Datatype & Latency & Throughput \\
 \end{table}
 
 \subsubsection{Optimising Memory Usage}
-Contiguous memory addresses are automatically prefetched the hardware (HW) prefetcher which is triggered on the second cache miss and will monitor accesses within a 4KB-range. HW prefetcher attempts to stay 256 bytes ahead and moniters 8 streams independently at the same time. Excessive HW prefetch saturates memory bus and limits scalability of high throughput parallel programs. OProfile can give averaged memory access bandwidth. The theoretical maximum bandwidth for four memory channels is 51.2GB/s per socket. When memory is saturated, further increase in thread number does not improve performance. \\
-Cacheability tools such as stream store and stream read could be applied if the memory addresses in concern are 128-bit aligned, which is not applicable currently. Future optimisation work might involve aligning the arrays in memory. \\
-The L1D cache is 8-way associative of 64 sets. In an usual memory address, the last 6 bits denotes offset in a cacheline (64 bytes) and the next 6 bits denote the set number. Fetching more than 8 cachelines with the same middle 6 bits causes conflict misses (premature eviction) and possibly increase miss rate. This is known as 4K aliasing ($2^12$) and should be avoided. 4K aliasing would be more manifested in Percival library in which 12 data members worst-case need to be prefetched in one cycle and they have all been aligned to the same boundary.  \\
+\label{sec:memusage}
+Contiguous memory addresses are automatically prefetched by the hardware (HW) prefetcher which is triggered on the second cache miss and will monitor accesses within a 4KB-range. HW prefetcher attempts to stay 256 bytes ahead and moniters 8 streams independently at the same time. Excessive HW prefetch saturates memory bus and limits scalability of high throughput parallel programs. OProfile can give averaged memory access bandwidth\ref{Operfmetrics}. The theoretical maximum bandwidth for four memory channels is 51.2GB/s per socket. When memory is saturated, further increase in thread number does not improve performance. \\
+The calibration arrays $G_C, G_F, O_C, O_F$ are periodic in sample frame location. They are therefore transposed, together with the sample and reset frames, so that this periodicity can be exploited, saving large number of load operations\footnote{Exact number of loads depends on prefetching and on proportion of used data in one cache line.}. This assumes that transposition of sample and reset frames could be done by the upstream frame receiver easily. otherwise the original geometry is preferred. \\
+Cacheability tools such as stream store and stream load \cite{themanual} could be applied if the memory addresses in concern are 256-bit aligned, which is not applicable currently. Future optimisation work might involve aligning the arrays in memory. However, stream store on our toy system degrades bandwidth. \\
+The L1D cache is 8-way associative of 64 sets. In an usual memory address, the last 6 bits denotes offset in a cacheline (64 bytes) and the next 6 bits denote the set number. Fetching more than 8 cachelines with the same middle 6 bits causes conflict misses (premature eviction) and possibly increases miss rate. This is known as 4K aliasing ($2^{12}$) and should be avoided. 4K aliasing would be more manifested in Percival library in which 12 data members worst-case need to be prefetched in one cycle and they have all been aligned to the same boundary. OProfile can count 4K aliasing event. This, however, has not been observed. Further investigation is possible.
 
 \subsection{Measuring Performance}
-At early stage of profiling, OProfile output is used to measure the time spent in each function. However, GCC compiler tends to inline small functions when optimisation is switch on and consequently OProfile wrong detect the function being called. We resolved to using a time difference measurement before and after the function is turned on. Though performance varies between runs, we can still obtain reasonably good estimate with this method. The GNU timer was for this purpose, giving Elapsed Wall time in centi-second precision. \\
+At an early stage of profiling, OProfile output is used to measure the time spent in each function. However, GCC compiler tends to inline small functions when optimisation is switch on and consequently OProfile will wrongly detect the function being called. We resolved to using a time difference measurement before and after the function is turned on. Though performance varies between runs, we can still obtain reasonably good estimate with this method. The GNU timer was for this purpose, giving Elapsed Wall time in centi-second precision\footnote{GNU timer is assummed to be accurate. To have an even more precise and accurate time measurement, the shell timer can be used instead.}. \\
 
-Performance varies due to many other factors too, including other tasks running on the same machine, the timing function used and cache access pattern determined by input data types. It is therefore more reasonable to measure statistical performance by average over a large number of repeats, each having realistic workload. Despite that some of the initial measurements still use 1 iterations and relatively small number of memory buffer, in our later tests we processed 100 image frames occupying separate memory locations and repeated this processing 10 times. This test is then repeated another 10 times using the Python script which also computes the mean and standard deviation from these bandwidth measurrments. Measurements are performed under grain size of 3528 element using runtime-determined number of threads. In the final fine-tuning of the library, we varied the number of threads used and the sub-problem size for each thread independently.
+Performance varies due to many other factors too, including other tasks running on the same machine, the timing function used and cache access pattern determined by input data types. It is therefore more reasonable to measure statistical performance by averaging over a large number of repeats, each having realistic workload. Despite that some of the initial measurements still use 1 iteration and relatively small number of memory buffer, in our later tests we processed 100 image frames occupying separate memory locations and repeated this processing 10 times, refreshing the 100 buffers after each repeat. This test is then repeated another 10 times using a Python script which also computes the mean and standard deviation from these bandwidth measurrments. Measurements are performed under grain size of 3528 elements using runtime-determined number of threads. In the final fine-tuning of the library, we varied the number of threads used and the sub-problem size for each thread independently. 
+In fact, there was a misunderstanding in the dimensions, the tests were all carried out using a frame dimension of (7$\times$3717) rather than (7$\times$3528). To get better resolution in the graph, grain sizes that are not factors of the number of pixels were used. Since the problem scales linearly with the size of the image frame, this causes at most 10\% error.
 
 \subsection{Results}
 
-Fig \ref{thread} shows the improvement in bandwidth after each modifications. Most significant improvements were seen when parallelisation, compiler optimisation, replacement with bitwise operations, AVX in conjunction with parallel$\_$for were used. These are applicable to other optimisation scenarios also. \\
-Optimisations performed lower down the chart are modifications of code higher up on the chart.
+Fig.\ref{fig:opstep} shows the improvement in bandwidth after each modification. Most significant improvements were seen when parallelisation, compiler optimisation, replacement with bitwise operations, AVX in conjunction with parallel$\_$for were switched on. These are applicable to other optimisation scenarios also. \\
+Optimisations performed lower down Fig.\ref{fig:opstep} are modifications of code higher up.
 
 % a graph showing how each step gives rise to optimisation
 \begin{figure}[h]
 \centering
 \includegraphics[width=0.48\textwidth]{fig/barplot.eps}
 \caption{Optimisation steps and bandwidth. }
-
+\label{fig:opstep}
 \end{figure}
 
 \subsubsection{Grain size}
 \begin{figure}[h]
 \centering
 \includegraphics[width=0.48\textwidth]{fig/lineplot_grain_size.eps}
-\caption{Grain size-Bandwidth dependence. The lower two panels show a zoomed plots corresponding to large and small grain sizes. Note that parallelism was limited when grain size is larger than \texttildelow 1M pixels.}\label{grain_size}
-
+\caption{Grain size-Bandwidth dependence. The lower two panels show a zoomed plots corresponding to large and small grain sizes. Note that parallelism was limited when grain size is larger than \texttildelow 1M pixels. These three figures were taken separately and might disagree with each other on absolute bandwidth.}\label{grain_size}
 \end{figure}
-Fig. \ref{grain_size} shows dependence of bandwidth on the subrange delegated to each (grain size). Bandwidth decreases in general with subrange size and can be explained as the subproblems no longer fit into caches. In the region with grain size $700,000 ~ 110,000$, complex peaks and troughs were observed. This behaviour could not be fully explained at the time of completion. However, the bandwidth dependence on the number of threads (Fig. \ref{threads}) might shed light on this complex pattern. \\
+
+Fig.\ref{grain_size} shows dependence of bandwidth on the subrange delegated to each (grain size). Bandwidth decreases in general with subrange size and can be explained as the subproblems no longer fit into caches. In the region with grain size 700,000\texttildelow110,000, complex patterns were observed. This behaviour could not be fully explained at the time of completion of this report. Bandwidth dependence on the number of threads (Fig.\ref{fig:threads}) might shed light on this complex pattern. \\
 
 \subsubsection{Number of Threads}
-The number of logical threads are theoretically optimal when it equals the number of physical threads. With HyperThreading switched off, Fig.\ref{thread} shows more subtleties in this dependence. The bandwidth depends on number of threads and grain size simultaneously. When the number of subproblems is far greater than the number of physical threads available, linear scaling with number of threads is followed by saturation at 10 threads. When the number of subproblems less than number of physical threads, saturation is observed when the number of threads equals number of subproblems. The onset of saturation is independent of number of physical cores. This hints on the library being memory bound. \\
 
-Most complex of all is when the number of subproblems is greater than but comparable to the number of physical threads. Onset of saturation is shifted to smaller number of logical threads and two stages of saturations were oberved with the second stage always performing better than the first. In addition, the onset of saturation is dependent the number of physical cores available. \\
+\begin{figure*}[tb]
+\minipage{0.33\textwidth}
+  \includegraphics[width=\linewidth]{fig/lineplot_threads_small_grain.eps}
+\endminipage\hfill
+\minipage{0.33\textwidth}
+  \includegraphics[width=\linewidth]{fig/lineplot_threads.eps}
+\endminipage\hfill
+\minipage{0.33\textwidth}%
+  \includegraphics[width=\linewidth]{fig/lineplot_threads83.eps}
+\endminipage
 
-\begin{figure}[h]
-\centering
-\includegraphics[width=0.48\textwidth]{fig/lineplot_threads.eps}
-\caption{Thread-Bandwidth dependence. }\label{thread}
+\caption{Bandwidth-Number of Threads dependence. The first two graphs were taken at constant grain size. The graph on the right was taken for various grain sizes on server 83. Note the onsets of saturation at 5 and 8 threads (1058400), 3 and 9 threads (793800), 11 threads (352800). Grain sizes were chosen arbitrarily.}\label{fig:threads}
+\end{figure*}
 
-\end{figure}
+The number of logical threads are theoretically optimal when it equals the number of physical threads. Fig.\ref{fig:threads} shows more subtleties in this dependence. The bandwidth depends on number of threads and grain size simultaneously. When the number of subproblems is far greater than the number of physical threads available, linear scaling with number of threads is followed by saturation at 10 threads (Fig.\ref{fig:threads}, left). 
 
-
-The following hypothesis attempts to give a reason to the two figures. Suppose peaks in Fig.\ref{grain_size} are due to the L3 cache being filled up. Since not necessarily all threads are working simultaneously, it is possible that the L3 cache is filled by worksets of 1~8 threads (in server 77). This leads to the major and minor spikes in Fig.\ref{grain_size}, with the major ones at 811440 (1 thread), 44423360 (2 threads), 2000000 (4 threads) and 1000000 (8 threads). Small peaks are due to other multiples of number of threads which, due to TBB's way of dividing tasks, are not as capable of fitting into the cache. \\
-
-The effective pixel size from this argument is approximately 32.3 Bytes in close agreement with the expected pixel size, 30.9 Bytes, including associated calibration data. In Fig.\ref{threads} onsets of the bandwidth saturation (at 4 and 9 threads respectively) correspond to half-filled and filled L3 cache. This trend is generally observed even for grain size other than 8114400. Also, since servers 83 and 85 have larger L3 caches, the number of threads needed to reach saturation is larger than server 77. With this rule of thumb in mind, The grain size could be chosen in relation to the number of threads available such that saturation appears at smaller number of threads. This saves computation resources. \\
-
-Furthermore, in the case of very small grain sizes, the saturation is possibly due to a balance between improvement in performance and overhead due to creation of new threads. However, no definitive results have been produced on this matter. \\
+The complex behaviour occurs when the number of subproblems is greater than but comparable to the number of physical threads (Fig.\ref{fig:threads}, middle). Onset of saturation is shifted to smaller number of logical threads and two stages of saturations were oberved. In addition, the onset of saturation depends on the number of physical cores available (Server 77 vs 83). On the same machine (Fig.\ref{fig:threads}, right), saturation number of threads and saturation bandwidth both depend upon the grain size. \\
 
 \section{Discussion}
-As discussed previously, the number of threads used should reflect the number of physical threads and the bandwidth variation with grain size should reflect the memory hierarchy. In fact we observed clear changes in measurements for these two parameters, yet the correspondence is not consistent with our prediction. This also stresses the fact that after our optimisation, the library becomes memory-bound as opposed to core-bound. Further optimiation efforts could be made on optimising memory usage. However, the upper limit to this approach is limited by $~75%$ of the theoretical maximum memory bus bandwidth. 
+The following hypothesis attempts to give a reason to Fig.\ref{fig:threads} and Fig.\ref{grain_size}. Suppose peaks in Fig.\ref{grain_size} are due to the L3 cache being filled up. Since not necessarily all threads are working simultaneously, it is possible that the L3 cache is filled by worksets of 1\texttildelow8 threads (in server 77). This leads to the major and minor spikes in Fig.\ref{grain_size}, with the major ones at 811440 (1 thread), 405720 (2 threads), 194040 (4 threads) and 88200 (8 threads). Small peaks arise from other multiples of number of threads which, due to TBB's way of dividing tasks, are not as capable of fitting into the cache. \\
 
-The performance is affected by a variety of factors, some tested, and some not within our control. Particularly, the servers we experimented with are based on Non-Uniformed Memory Access architecture, in which accesses to different part of the RAM take different amount of time as seen by each processor. Threads accessing data from immediately neightbouring RAM certainly take less time than their counterparts on the other core. However, this effect is hidden by Intel TBB which automatically balances loads in different threads. The uneven distribution of data into the two RAMs are realistic since the upstream application writes only to the RAM associated with it. \\
+In Fig.\ref{fig:threads}, middle, onsets of the bandwidth saturation (at 4, 8 and 16 threads respectively) correspond to quarter-filled, half-filled and filled L3 cache. Also, since servers 83 and 85 have larger L3 caches, the number of threads needed to reach saturation is larger than server 77. With these ideas in mind, The grain size could be chosen in relation to the number of threads available such that saturation appears at smaller number of threads. This saves computation resources. \\
 
-HyperThreading and TurboBoost have undetermined influence on the program. Hyperthreading might have negative impact on performance as seen by a comparison between machines with and without HyperThreading switched on (server 83 on, 85 off). TurboBoost should in theory improve performance by overclocking, yet this has not been tested. Neither did we disable TurboBoost in our tests. This possible renders the results less reliable.
+Bandwidth saturates when more threads were dedicated to the library. This implies that the library is very likely to be memory-bound after the optimisation. This directs further efforts to optimise the memory usage.
 
-In addition, the bandwidth measurments heavily rely on the number of frame frames used. Using a high number potentially exercises the cache hierarchy better and improves the bandwidth. 
+The performance is affected by a variety of factors, some tested, and some not within our control. Particularly, the servers we experimented with are based on Non-Uniformed Memory Access Architecture (NUMA), in which accesses to different part of the RAM take different amount of time as seen by each processor. However, this effect is hidden by Intel TBB which automatically balances loads in different threads. The uneven distribution of data into the two RAMs mimics the working environment since the upstream application writes only to the RAM associated with it.
 
-GNU timer is assummed to be accurate. To have an even more precise and accurate time measurement, the shell timer can be used instead. 
+When other applications are also running on the machine, the cache utilisation will differ significantly. It is therefore necessary to retune the library each time the hardware and working environment change. A safe and stable choice is to use small grain sizes(such that the sub-ranges much greater than the number of physical threads) and saturating number of threads. 
+
+HyperThreading and TurboBoost have undetermined influence on the program. Hyperthreading might have negative impact on performance as seen by a comparison between machines with and without HyperThreading switched on (server 83 off, 85 on). TurboBoost should in theory improve performance by overclocking, yet this has not been tested. Neither did we disable TurboBoost in our tests. This possibly renders the results less reliable.
 
 \section{Conclusion}	%page5
+In conclusion, we have designed a processing library for the Percival detector, aiming at high processing bandwidth. This library has been optimised using techniques including Intel Threading Building Blocks (TBB), Intel Advanced Vector Extensions (AVX) and GCC compiler optimisation. It is able to perform stably at 2.5GB/s on one node, 59x the baseline bandwidth. Various environmental factors affect the performance, contributing about 10$\%$ variations.
 
+Future optimisation effort should focus on how to further optimise memory usage by techniques such as memory alignment and prefetching. Further improvement on the computation algorithm is also possible.
 
-%\bibliographystyle{plain}
-%\bibliographystyle{IEEEtran}
+\section*{Acknowledgment}
+The author wishes to thank his supervisor Ulrik K. Pedersen for his insights into the subject and his unwavering support along the way. The author also wishes to thank Arvinder Palaha for his help on using Test-Driven Development and on providing the Python prototype.
+
+\begin{thebibliography}{7}
 % argument is your BibTeX string definitions and bibliography database(s)
-%\bibliography{citations}
 
-\begin{thebibliography}{1}
+\bibitem{wunderer2014percival}
+CB~Wunderer, A~Marras, M~Bayer, L~Glaser, P~G{\"o}ttlicher, S~Lange, F~Pithan,
+  F~Scholz, J~Seltmann, I~Shevyakov, et~al.
+\emph{The percival soft x-ray imager}, Journal of Instrumentation, 9(03):C03056, 2014.
+
+\bibitem{cite:hardwarespec}
+L~Gwennap,
+\emph{Sandy Bridge Spans Generations}, Microprocessor Report, Sep 2010.
+
+
+\bibitem{TBBbook}
+James Reinders. 2007. \emph{Intel Threading Building Blocks} (First ed.). O'Reilly $\&$ Associates, Inc., Sebastopol, CA, USA. 
+
+\bibitem{AVX}
+\emph{The Intel Intrinsics Guide.} The Intel Intrinsics Guide. Intel. Web. https://software.intel.com/sites/landingpage/IntrinsicsGuide/$\#$.
+
+\bibitem{BOOST}
+\emph{Part IV. Boost Test Library: The Unit Test Framework.} BOOST. Web. http://www.boost.org/doc/libs/1$\_$42$\_$0/libs/test/doc/html/utf.html
+
+\bibitem{OPerf}
+\emph{OProfile manual.} OProfile. Web. http://oprofile.sourceforge.net/doc/index.html
 
 \bibitem{themanual}
 Intel, R. \emph{Intel 64 and IA-32 Architectures Optimization Reference Manual.} Intel Corporation, April (2012).
 
-\bibitem{TBBbook}
-
-\bibitem{spec}
+\bibitem{gcc}
+\emph{Options That Control Optimization.} gcc. Web. https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html
 
 \end{thebibliography}
 

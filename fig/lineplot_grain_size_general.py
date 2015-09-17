@@ -27,10 +27,10 @@ errbar77_3 = np.array(dataset3_77[2])
 
 ax1 = fig.add_subplot(gs[0,:])
 line1 = ax1.plot(grain_size77_2, bandwidth77_2, '-r')
-ax2 = fig.add_subplot(gs[1,1])
-line1 = ax2.plot(grain_size77_1, bandwidth77_1, '-r')
 ax3 = fig.add_subplot(gs[1,0])
 line1 = ax3.plot(grain_size77_3, bandwidth77_3, '-r')
+ax2 = fig.add_subplot(gs[1,1], sharey=ax3)
+line1 = ax2.plot(grain_size77_1, bandwidth77_1, '-r')
 
 gs.update(wspace=0.1, hspace=0.25)
 
@@ -100,7 +100,8 @@ ax3.set_xscale('log')
 ax1.set_ylim([0,3000])
 ax1.set_yticks(np.arange(0,3000,500))
 ax2.set_ylim([0,3000])
-ax2.set_yticks(np.arange(0,3000,500))
+plt.setp(ax2.get_yticklabels(), visible=False)
+
 ax3.set_ylim([0,3000])
 ax3.set_yticks(np.arange(0,3000,500))
 
@@ -109,7 +110,7 @@ ax2.set_xlabel('Grain Size/elements')
 ax3.set_xlabel('Grain Size/elements')
 
 ax1.set_ylabel('Bandwidth(MB/s)')
-ax2.set_ylabel('Bandwidth(MB/s)')
+ax2.set_ylabel('')
 ax3.set_ylabel('Bandwidth(MB/s)')
 
 font = {'family' : 'normal',
@@ -118,6 +119,6 @@ font = {'family' : 'normal',
 
 ax1.legend( [line1[0], line2[0], line3[0]], ['Server 77', 'Server 83', 'Server 85'] )
 
-plt.savefig('./fig/lineplot_grain_size.eps', format='eps', dpi=300)
+plt.savefig('./fig/lineplot_grain_size.png', format='png', dpi=300)
 plt.show()
 
